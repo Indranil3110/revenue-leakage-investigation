@@ -100,7 +100,7 @@ def main():
 
         # Decide churn month (voluntary or involuntary) or remain active through end
         months_active = int(rng.integers(4, 24))  # typical subscription lifetime window
-        candidate_end = (sub_start + pd.DateOffset(months=months_active)).to_period("M").to_timestamp("MS")
+        candidate_end = (sub_start + pd.DateOffset(months=months_active)).to_period("M").to_timestamp(how="start")
 
         # Determine if churn occurs
         vol_p = SEGMENT_VOL_CHURN_P_MONTH[seg]
@@ -235,7 +235,12 @@ def main():
         cust_id = int(sub["customer_id"])
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
         sub_start = pd.Timestamp(sub["start_date"]).to_period("M").to_timestamp("MS")
-        sub_end = pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp("MS") if sub["end_date"] else END_DATE.to_period("M").to_timestamp("MS")
+        sub_end = (
+            pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp(how="start")
+            if sub["end_date"]
+            else END_DATE.to_period("M").to_timestamp(how="start")
+        )
+
 
         months = month_start_series(sub_start, sub_end)
         base_plan = sub["plan"]
@@ -261,7 +266,7 @@ def main():
             # If churned involuntarily, create a cluster of failures near end
             # (We simulate by increasing fail chance in last 2 months if subscription ended)
             if sub["status"] == "canceled" and sub["end_date"]:
-                end_m = pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp("MS")
+                end_m = pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp(how="start")
                 if m >= (end_m - pd.DateOffset(months=2)):
                     if rng.random() < min(0.75, failed_p + 0.35):
                         payment_status = "failed"
