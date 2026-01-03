@@ -234,7 +234,7 @@ def main():
     for _, sub in subscriptions.iterrows():
         cust_id = int(sub["customer_id"])
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
-        sub_start = pd.Timestamp(sub["start_date"]).to_period("M").to_timestamp("MS")
+        sub_start = pd.Timestamp(sub["start_date"]).to_period("M").to_timestamp(how="start")
         sub_end = (
             pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp(how="start")
             if sub["end_date"]
