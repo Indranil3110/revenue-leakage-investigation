@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import pandas as pd
-from datetime import date, timedelta
 
 # ---------------------------
 # Config
@@ -9,8 +8,9 @@ from datetime import date, timedelta
 SEED = 42
 N_CUSTOMERS = 2000
 START_DATE = pd.Timestamp("2024-01-01")
-END_DATE = pd.Timestamp("2025-12-31")  # data range for customer lifecycle
-USAGE_DAYS = 240  # generate last 240 days of daily usage per customer (enough for 7/14/30 analysis)
+END_DATE = pd.Timestamp("2025-12-31")   # overall dataset end
+USAGE_DAYS = 240                        # per-customer rolling daily usage window
+DROP_WINDOW_DAYS = 30                   # drop window leading into churn or risk period
 
 OUTPUT_DIR = os.path.join("data", "raw")
 
@@ -20,21 +20,25 @@ PLAN_PRICE_PER_SEAT = {"Basic": 49, "Pro": 99, "Business": 149}
 SEGMENTS = ["SMB", "Mid-Market", "Enterprise"]
 REGIONS = ["NA", "EMEA", "APAC", "LATAM"]
 
-# Segment-driven seat ranges (realistic for B2B seat-based SaaS)
 SEGMENT_SEAT_RANGE = {
     "SMB": (3, 25),
     "Mid-Market": (26, 100),
     "Enterprise": (101, 400),
 }
 
-# Segment-driven churn / billing failure tendencies (tunable knobs)
+# Segment tendencies (tunable)
 SEGMENT_VOL_CHURN_P_MONTH = {"SMB": 0.030, "Mid-Market": 0.018, "Enterprise": 0.010}
 SEGMENT_INV_CHURN_P_MONTH = {"SMB": 0.010, "Mid-Market": 0.007, "Enterprise": 0.004}
 SEGMENT_FAILED_PAY_P = {"SMB": 0.080, "Mid-Market": 0.050, "Enterprise": 0.025}
 
-# Usage drop behavior before revenue-loss events
-DROP_WINDOW_DAYS = 30
-DROP_MIN, DROP_MAX = 0.35, 0.70  # usage drops by 35% to 70%
+# Churners: usage drops by 35–70% in last 30 days before churn end_date
+DROP_MIN, DROP_MAX = 0.35, 0.70
+
+# Active-but-at-risk simulation (to demonstrate early warning on active customers)
+AT_RISK_ACTIVE_P = 0.10            # 10% of active customers show risk signals
+ACTIVE_DROP_MIN, ACTIVE_DROP_MAX = 0.20, 0.55
+AT_RISK_ACTIVE_BILLING_P = 0.20    # 20% of at-risk actives have failures in last month
+AT_RISK_ACTIVE_TICKETS_P = 0.15    # 15% of at-risk actives get ticket spike
 
 
 def ensure_dir(path: str) -> None:
@@ -47,8 +51,8 @@ def month_start_series(start: pd.Timestamp, end: pd.Timestamp) -> pd.DatetimeInd
 
 
 def random_date_between(rng: np.random.Generator, start: pd.Timestamp, end: pd.Timestamp) -> pd.Timestamp:
-    delta_days = (end - start).days
-    return start + pd.Timedelta(days=int(rng.integers(0, max(delta_days, 1) + 1)))
+    delta_days = max((end - start).days, 0)
+    return start + pd.Timedelta(days=int(rng.integers(0, delta_days + 1)))
 
 
 def main():
@@ -60,8 +64,11 @@ def main():
     # ---------------------------
     customer_ids = np.arange(1, N_CUSTOMERS + 1, dtype=np.int64)
 
-    signup_dates = [random_date_between(rng, START_DATE, END_DATE - pd.Timedelta(days=120)) for _ in customer_ids]
-    segments = rng.choice(SEGMENTS, size=N_CUSTOMERS, p=[0.60, 0.30, 0.10])  # more SMBs
+    signup_dates = [
+        random_date_between(rng, START_DATE, END_DATE - pd.Timedelta(days=120))
+        for _ in customer_ids
+    ]
+    segments = rng.choice(SEGMENTS, size=N_CUSTOMERS, p=[0.60, 0.30, 0.10])
     regions = rng.choice(REGIONS, size=N_CUSTOMERS, p=[0.55, 0.20, 0.15, 0.10])
 
     customers = pd.DataFrame({
@@ -76,53 +83,41 @@ def main():
     # ---------------------------
     subscription_ids = np.arange(1, N_CUSTOMERS + 1, dtype=np.int64)
 
-    # Plan mix differs by segment
     plan_probs_by_segment = {
         "SMB": [0.60, 0.35, 0.05],
         "Mid-Market": [0.25, 0.55, 0.20],
         "Enterprise": [0.05, 0.35, 0.60],
     }
 
-    plans = []
-    seats = []
-    start_dates = []
-    end_dates = []
-    statuses = []
+    plans, seats, start_dates, end_dates, statuses = [], [], [], [], []
 
-    for i, row in customers.iterrows():
+    for _, row in customers.iterrows():
         seg = row["segment"]
         plan = rng.choice(PLANS, p=plan_probs_by_segment[seg])
+
         seat_low, seat_high = SEGMENT_SEAT_RANGE[seg]
         seat_count = int(rng.integers(seat_low, seat_high + 1))
 
         sub_start = pd.Timestamp(row["signup_date"]) + pd.Timedelta(days=int(rng.integers(0, 14)))
         sub_start = min(sub_start, END_DATE)
 
-        # Decide churn month (voluntary or involuntary) or remain active through end
-        months_active = int(rng.integers(4, 24))  # typical subscription lifetime window
+        months_active = int(rng.integers(4, 24))
         candidate_end = (sub_start + pd.DateOffset(months=months_active)).to_period("M").to_timestamp(how="start")
 
-        # Determine if churn occurs
         vol_p = SEGMENT_VOL_CHURN_P_MONTH[seg]
         inv_p = SEGMENT_INV_CHURN_P_MONTH[seg]
-        churn_draw = rng.random()
 
         churn_type = None
-        if churn_draw < 0.45:  # not everyone churns; keep many active
-            # within churners, decide voluntary vs involuntary
+        if rng.random() < 0.45:
             churn_type = "voluntary" if rng.random() < (vol_p / (vol_p + inv_p)) else "involuntary"
-        # else no churn
 
         if churn_type is None:
             sub_end = pd.NaT
             status = "active"
         else:
-            # end date can't exceed END_DATE and can't be too soon
             sub_end = min(candidate_end, END_DATE)
-            # ensure at least 60 days of life
             if (sub_end - sub_start).days < 60:
-                sub_end = sub_start + pd.Timedelta(days=60)
-                sub_end = min(sub_end, END_DATE)
+                sub_end = min(sub_start + pd.Timedelta(days=60), END_DATE)
             status = "canceled"
 
         plans.append(plan)
@@ -142,7 +137,14 @@ def main():
     })
 
     # ---------------------------
-    # 3) plan_changes (some customers upgrade/downgrade or change seats)
+    # Active-but-at-risk customer set (for early warning demo)
+    # ---------------------------
+    active_customers = subscriptions.loc[subscriptions["status"] == "active", "customer_id"].astype(int).tolist()
+    n_at_risk = int(len(active_customers) * AT_RISK_ACTIVE_P)
+    at_risk_active_set = set(rng.choice(active_customers, size=n_at_risk, replace=False)) if n_at_risk > 0 else set()
+
+    # ---------------------------
+    # 3) plan_changes
     # ---------------------------
     changes = []
     change_id = 1
@@ -153,7 +155,6 @@ def main():
         start = pd.Timestamp(sub["start_date"])
         end = pd.Timestamp(sub["end_date"]) if sub["end_date"] else END_DATE
 
-        # number of changes depends on segment
         n_changes = int(rng.integers(0, 3)) if seg != "Enterprise" else int(rng.integers(0, 4))
 
         current_plan = sub["plan"]
@@ -167,22 +168,19 @@ def main():
             old_seats, new_seats = current_seats, current_seats
 
             if change_type in ["upgrade", "downgrade"]:
-                # move one step up/down where possible
                 idx = PLANS.index(current_plan)
                 if change_type == "upgrade" and idx < len(PLANS) - 1:
                     new_plan = PLANS[idx + 1]
                 elif change_type == "downgrade" and idx > 0:
                     new_plan = PLANS[idx - 1]
                 else:
-                    change_type = "seat_change"  # fallback
+                    change_type = "seat_change"
 
             if change_type == "seat_change":
-                # seats adjust by +/- up to 25% (bounded to segment range)
                 seat_low, seat_high = SEGMENT_SEAT_RANGE[seg]
                 delta = int(np.round(current_seats * rng.uniform(-0.25, 0.25)))
                 new_seats = int(np.clip(current_seats + delta, seat_low, seat_high))
 
-            # record
             changes.append({
                 "change_id": change_id,
                 "customer_id": cust_id,
@@ -195,7 +193,6 @@ def main():
             })
             change_id += 1
 
-            # update current
             current_plan = new_plan
             current_seats = new_seats
 
@@ -209,7 +206,6 @@ def main():
     invoice_id = 1
     payment_id = 1
 
-    # Helper: get "current" plan/seats for a customer at a given month based on changes
     plan_changes_sorted = plan_changes.sort_values(["customer_id", "change_date"]) if not plan_changes.empty else plan_changes
 
     def plan_state_at(customer_id: int, month_start: pd.Timestamp, base_plan: str, base_seats: int):
@@ -220,27 +216,26 @@ def main():
         cust_changes = plan_changes_sorted[plan_changes_sorted["customer_id"] == customer_id]
         if cust_changes.empty:
             return plan, seats_
-        # apply changes up to that month_start (inclusive)
         relevant = cust_changes[pd.to_datetime(cust_changes["change_date"]) <= month_start]
         for _, ch in relevant.iterrows():
             if ch["change_type"] in ("upgrade", "downgrade"):
                 plan = ch["new_plan"]
-            if ch["change_type"] in ("seat_change", "upgrade", "downgrade"):
-                # seat change rows always have new_seats, plan changes also carry seats
-                if pd.notna(ch["new_seats"]):
-                    seats_ = int(ch["new_seats"])
+            if pd.notna(ch["new_seats"]):
+                seats_ = int(ch["new_seats"])
         return plan, seats_
+
+    last_month_start = END_DATE.to_period("M").to_timestamp(how="start") - pd.DateOffset(months=1)
 
     for _, sub in subscriptions.iterrows():
         cust_id = int(sub["customer_id"])
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
+
         sub_start = pd.Timestamp(sub["start_date"]).to_period("M").to_timestamp(how="start")
         sub_end = (
             pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp(how="start")
             if sub["end_date"]
             else END_DATE.to_period("M").to_timestamp(how="start")
         )
-
 
         months = month_start_series(sub_start, sub_end)
         base_plan = sub["plan"]
@@ -249,10 +244,8 @@ def main():
         for m in months:
             plan_m, seats_m = plan_state_at(cust_id, m, base_plan, base_seats)
             amount_due = PLAN_PRICE_PER_SEAT[plan_m] * seats_m
-            due_date = (m + pd.offsets.MonthBegin(1)) - pd.Timedelta(days=1)  # last day of month
+            due_date = (m + pd.offsets.MonthBegin(1)) - pd.Timedelta(days=1)
 
-            # invoice status / payment outcomes
-            # Failed payments more likely for SMB; enterprise usually pays
             failed_p = SEGMENT_FAILED_PAY_P[seg]
             will_fail = rng.random() < failed_p
 
@@ -260,17 +253,21 @@ def main():
             payment_status = "failed" if will_fail else "paid"
             amount_paid = 0.0 if will_fail else float(amount_due)
 
-            # payment attempt date around due date
             attempt_date = due_date - pd.Timedelta(days=int(rng.integers(0, 5)))
 
-            # If churned involuntarily, create a cluster of failures near end
-            # (We simulate by increasing fail chance in last 2 months if subscription ended)
+            # For churners: more failures near the end
             if sub["status"] == "canceled" and sub["end_date"]:
                 end_m = pd.Timestamp(sub["end_date"]).to_period("M").to_timestamp(how="start")
                 if m >= (end_m - pd.DateOffset(months=2)):
                     if rng.random() < min(0.75, failed_p + 0.35):
                         payment_status = "failed"
                         amount_paid = 0.0
+
+            # For at-risk ACTIVE customers: inject failures in last month (small subset)
+            if sub["status"] == "active" and cust_id in at_risk_active_set:
+                if m >= last_month_start and rng.random() < AT_RISK_ACTIVE_BILLING_P:
+                    payment_status = "failed"
+                    amount_paid = 0.0
 
             if payment_status == "paid":
                 invoice_status = "paid"
@@ -299,13 +296,8 @@ def main():
     payments = pd.DataFrame(payments_rows)
 
     # ---------------------------
-    # 6) product_usage_daily
+    # 6) product_usage_daily  (FIXED + active-risk simulation)
     # ---------------------------
-    # Generate daily usage with realistic behavior:
-    # - usage exists only while customer is active (no usage after churn end_date)
-    # - base usage depends on seats and segment
-    # - usage drops in the 30 days leading up to churn end_date (if churned)
-
     usage_rows = []
     subs_map = subscriptions.set_index("customer_id")
 
@@ -314,22 +306,18 @@ def main():
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
         seats_ = int(sub["seats"])
 
-        # Customer-specific activity window: start_date -> end_date (if churned) else -> END_DATE
         cust_start = pd.Timestamp(sub["start_date"])
         cust_end = pd.Timestamp(sub["end_date"]) if sub["end_date"] else END_DATE
         usage_end_cust = min(cust_end, END_DATE)
 
-        # Generate only last USAGE_DAYS days (or fewer) within customer's active window
         usage_start_cust = usage_end_cust - pd.Timedelta(days=USAGE_DAYS - 1)
-        usage_start_cust = max(usage_start_cust, cust_start)  # don’t generate before subscription starts
+        usage_start_cust = max(usage_start_cust, cust_start)
 
-        # If the customer is extremely new and start > end (edge case), skip safely
         if usage_start_cust > usage_end_cust:
             continue
 
         usage_dates = pd.date_range(usage_start_cust, usage_end_cust, freq="D")
 
-        # baseline daily active users ~ 35-75% of seats depending on segment
         if seg == "SMB":
             dau_ratio = rng.uniform(0.35, 0.65)
         elif seg == "Mid-Market":
@@ -342,20 +330,31 @@ def main():
         base_events = max(1, int(round(base_sessions * rng.uniform(2.0, 6.0))))
 
         churn_end = pd.Timestamp(sub["end_date"]) if (sub["status"] == "canceled" and sub["end_date"] is not None) else None
-        drop_factor = rng.uniform(DROP_MIN, DROP_MAX) if churn_end is not None else None
+        churn_drop_factor = rng.uniform(DROP_MIN, DROP_MAX) if churn_end is not None else None
+
+        # Active risk drop factor (one per customer, stable across days)
+        active_drop_factor = rng.uniform(ACTIVE_DROP_MIN, ACTIVE_DROP_MAX) if (churn_end is None and int(cust_id) in at_risk_active_set) else None
 
         for d in usage_dates:
             active_users = int(max(0, round(base_active_users * rng.uniform(0.85, 1.15))))
             sessions = int(max(0, round(base_sessions * rng.uniform(0.85, 1.20))))
             events = int(max(0, round(base_events * rng.uniform(0.80, 1.25))))
 
-            # Apply a usage drop in the 30 days leading into churn
+            # Churners: drop in the 30 days leading into churn
             if churn_end is not None:
                 days_to_churn = (churn_end - d).days
                 if 0 <= days_to_churn <= DROP_WINDOW_DAYS:
-                    active_users = int(round(active_users * (1.0 - drop_factor)))
-                    sessions = int(round(sessions * (1.0 - drop_factor)))
-                    events = int(round(events * (1.0 - drop_factor)))
+                    active_users = int(round(active_users * (1.0 - churn_drop_factor)))
+                    sessions = int(round(sessions * (1.0 - churn_drop_factor)))
+                    events = int(round(events * (1.0 - churn_drop_factor)))
+
+            # Active-but-at-risk: drop in the last 30 days of their available window
+            if churn_end is None and active_drop_factor is not None:
+                days_from_end = (usage_end_cust - d).days
+                if 0 <= days_from_end <= DROP_WINDOW_DAYS:
+                    active_users = int(round(active_users * (1.0 - active_drop_factor)))
+                    sessions = int(round(sessions * (1.0 - active_drop_factor)))
+                    events = int(round(events * (1.0 - active_drop_factor)))
 
             usage_rows.append({
                 "customer_id": int(cust_id),
@@ -367,9 +366,8 @@ def main():
 
     product_usage_daily = pd.DataFrame(usage_rows)
 
-
     # ---------------------------
-    # 7) support_tickets (optional realism)
+    # 7) support_tickets
     # ---------------------------
     tickets_rows = []
     ticket_id = 1
@@ -378,13 +376,15 @@ def main():
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
         sub = subs_map.loc[cust_id]
 
-        # baseline ticket volume by segment
         base_tickets = {"SMB": (0, 3), "Mid-Market": (1, 5), "Enterprise": (2, 8)}[seg]
         n_tickets = int(rng.integers(base_tickets[0], base_tickets[1] + 1))
 
-        # churners tend to have a few more tickets
         if sub["status"] == "canceled":
             n_tickets += int(rng.integers(0, 3))
+
+        # Ticket spike for some at-risk active customers
+        if int(cust_id) in at_risk_active_set and rng.random() < AT_RISK_ACTIVE_TICKETS_P:
+            n_tickets += int(rng.integers(2, 6))
 
         for _ in range(n_tickets):
             created = random_date_between(rng, START_DATE, END_DATE)
