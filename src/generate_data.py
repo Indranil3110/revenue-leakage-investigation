@@ -302,15 +302,11 @@ def main():
     # 6) product_usage_daily
     # ---------------------------
     # Generate daily usage with realistic behavior:
+    # - usage exists only while customer is active (no usage after churn end_date)
     # - base usage depends on seats and segment
-    # - usage drops in the 30 days leading up to subscription end (if churned)
+    # - usage drops in the 30 days leading up to churn end_date (if churned)
+
     usage_rows = []
-
-    # Generate usage window ending at END_DATE
-    usage_end = END_DATE
-    usage_start = usage_end - pd.Timedelta(days=USAGE_DAYS - 1)
-    usage_dates = pd.date_range(usage_start, usage_end, freq="D")
-
     subs_map = subscriptions.set_index("customer_id")
 
     for cust_id in customer_ids:
@@ -318,7 +314,22 @@ def main():
         seg = customers.loc[customers["customer_id"] == cust_id, "segment"].iloc[0]
         seats_ = int(sub["seats"])
 
-        # baseline daily active users ~ 40-75% of seats depending on segment
+        # Customer-specific activity window: start_date -> end_date (if churned) else -> END_DATE
+        cust_start = pd.Timestamp(sub["start_date"])
+        cust_end = pd.Timestamp(sub["end_date"]) if sub["end_date"] else END_DATE
+        usage_end_cust = min(cust_end, END_DATE)
+
+        # Generate only last USAGE_DAYS days (or fewer) within customer's active window
+        usage_start_cust = usage_end_cust - pd.Timedelta(days=USAGE_DAYS - 1)
+        usage_start_cust = max(usage_start_cust, cust_start)  # don’t generate before subscription starts
+
+        # If the customer is extremely new and start > end (edge case), skip safely
+        if usage_start_cust > usage_end_cust:
+            continue
+
+        usage_dates = pd.date_range(usage_start_cust, usage_end_cust, freq="D")
+
+        # baseline daily active users ~ 35-75% of seats depending on segment
         if seg == "SMB":
             dau_ratio = rng.uniform(0.35, 0.65)
         elif seg == "Mid-Market":
@@ -330,28 +341,18 @@ def main():
         base_sessions = max(1, int(round(base_active_users * rng.uniform(1.5, 3.0))))
         base_events = max(1, int(round(base_sessions * rng.uniform(2.0, 6.0))))
 
-        # Determine if we apply a pre-churn drop
-        churn_end = None
-        if sub["status"] == "canceled" and sub["end_date"] is not None:
-            churn_end = pd.Timestamp(sub["end_date"])
-
-        drop_factor = None
-        if churn_end is not None:
-            drop_factor = rng.uniform(DROP_MIN, DROP_MAX)
+        churn_end = pd.Timestamp(sub["end_date"]) if (sub["status"] == "canceled" and sub["end_date"] is not None) else None
+        drop_factor = rng.uniform(DROP_MIN, DROP_MAX) if churn_end is not None else None
 
         for d in usage_dates:
-            active_users = base_active_users
-            sessions = base_sessions
-            events = base_events
+            active_users = int(max(0, round(base_active_users * rng.uniform(0.85, 1.15))))
+            sessions = int(max(0, round(base_sessions * rng.uniform(0.85, 1.20))))
+            events = int(max(0, round(base_events * rng.uniform(0.80, 1.25))))
 
-            # add noise
-            active_users = int(max(0, round(active_users * rng.uniform(0.85, 1.15))))
-            sessions = int(max(0, round(sessions * rng.uniform(0.85, 1.20))))
-            events = int(max(0, round(events * rng.uniform(0.80, 1.25))))
-
-            # apply a usage drop leading into churn end date (if within window)
+            # Apply a usage drop in the 30 days leading into churn
             if churn_end is not None:
-                if (churn_end - d).days in range(0, DROP_WINDOW_DAYS + 1):
+                days_to_churn = (churn_end - d).days
+                if 0 <= days_to_churn <= DROP_WINDOW_DAYS:
                     active_users = int(round(active_users * (1.0 - drop_factor)))
                     sessions = int(round(sessions * (1.0 - drop_factor)))
                     events = int(round(events * (1.0 - drop_factor)))
@@ -365,6 +366,7 @@ def main():
             })
 
     product_usage_daily = pd.DataFrame(usage_rows)
+
 
     # ---------------------------
     # 7) support_tickets (optional realism)
