@@ -102,3 +102,24 @@ To ensure adoption of insights across teams:
 
 Consistent monitoring helps align teams around revenue retention goals.
 
+
+
+## 4. Limitations & Next Steps
+
+### 4.1 Limitations
+- This analysis is based on **synthetic data** designed to simulate realistic SaaS behaviors. While patterns mirror real-world dynamics, results should be interpreted as illustrative rather than definitive.
+- The early-warning system is **rule-based**, relying on predefined thresholds rather than probabilistic predictions.
+- Observed relationships are **correlational**, not causal. For example, usage decline is associated with churn risk but may not be the sole driver.
+
+These limitations are intentional to preserve interpretability and transparency in the initial analysis.
+
+---
+
+### 4.2 Next Steps
+Potential enhancements include:
+- **Validating thresholds** using historical outcomes to fine-tune sensitivity and reduce false positives
+- **Incorporating additional signals**, such as feature-level adoption or contract renewal timing
+- **Evaluating lightweight predictive models** (e.g., logistic regression) to complement rule-based flags while maintaining explainability
+- **Measuring intervention effectiveness** by tracking retention outcomes following Customer Success outreach
+
+These steps would enable a more mature, feedback-driven retention strategy over time.
