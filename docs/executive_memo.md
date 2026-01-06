@@ -11,6 +11,7 @@ This analysis simulates an internal investigation for a subscription-based SaaS 
 - Design an early-warning system to proactively flag at-risk customers before revenue loss occurs
 
 
+
 ## 2. Key Findings
 
 ### 2.1 Revenue Leakage Is Multi-Dimensional
@@ -52,3 +53,52 @@ Key results:
 - Billing failures and elevated support ticket volume appeared as secondary risk indicators
 
 These signals provide actionable lead time to intervene before revenue loss occurs.
+
+
+
+## 3. Recommendations
+
+### 3.1 Prioritize Customer Success Outreach Using Early-Warning Signals
+Customer Success teams should proactively engage customers flagged by the early-warning system, particularly those showing a sharp decline in product usage.
+
+Recommended actions:
+- Trigger outreach when usage declines by ≥20% over a 30-day window
+- Focus first on SMB customers and lower-tier plans, where churn risk is highest
+- Pair usage insights with qualitative discovery to identify root causes (adoption gaps, feature misalignment, pricing concerns)
+
+Early intervention at this stage can prevent avoidable churn and protect recurring revenue.
+
+---
+
+### 3.2 Reduce Billing-Related Leakage Through Targeted Intervention
+Billing failures account for a meaningful share of revenue leakage, especially around churn periods.
+
+Recommended actions:
+- Flag customers with repeated failed payment attempts for immediate follow-up
+- Introduce automated reminders or payment method validation for high-risk accounts
+- Coordinate between Finance and Customer Success to resolve billing issues before account cancellation
+
+Many billing-related losses can be recovered without customer attrition.
+
+---
+
+### 3.3 Monitor Downgrades as an Early Indicator of Revenue Risk
+Downgrades and seat reductions often precede full churn and represent early warning signs of declining account health.
+
+Recommended actions:
+- Track downgrade-driven MRR loss alongside churn metrics
+- Treat significant downgrades as a trigger for customer health reviews
+- Investigate whether downgrades are driven by usage declines, pricing pressure, or organizational changes at the customer
+
+This enables revenue preservation even when customers remain active.
+
+---
+
+### 3.4 Operationalize Risk Monitoring Through Shared Dashboards
+To ensure adoption of insights across teams:
+- Centralize churn, leakage, and early-warning metrics in a shared dashboard
+- Provide Finance, Growth, and Customer Success with consistent definitions and thresholds
+- Review risk metrics on a monthly cadence to evaluate intervention effectiveness
+
+Consistent monitoring helps align teams around revenue retention goals.
+
