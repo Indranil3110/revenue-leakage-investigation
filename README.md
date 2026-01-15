@@ -47,7 +47,7 @@ Active customers are evaluated using:
 - **GitHub** for version control and documentation
 
 ---
-
+```text
 ## Repository Structure
 ├── sql/
 │ ├── schema.sql
@@ -67,7 +67,7 @@ Active customers are evaluated using:
 │ └── raw/ # generated locally, not committed
 ├── notebooks/
 └── requirements.txt
-
+```
 
 ---
 
